@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Slave1 DB GUI (Read Operations)</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    input { padding: 8px; margin: 5px; width: 200px; }
+    button { padding: 8px 15px; margin: 5px; cursor: pointer; }
+    pre { background: #f5f5f5; padding: 10px; border-radius: 5px; }
+    .section { margin-bottom: 20px; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }
+    .node-status { display: flex; margin-bottom: 15px; }
+    .status-box { padding: 10px; margin-right: 10px; border-radius: 5px; color: white; }
+    .status-master { background: #4CAF50; }
+    .status-slave { background: #2196F3; }
+    .status-down { background: #f44336; }
+    .status-new-master { background: #FF9800; }
+    .read-only { background-color: #f0f0f0; }
+  </style>
+</head>
+<body>
+  <h1>Slave1 Database Interface (Read Operations)</h1>
+  
+  <div class="node-status">
+    <div id="master-status" class="status-box status-master">Master: Up (Port 8001)</div>
+    <div id="slave1-status" class="status-box status-slave">Slave 1: Up (Port 8002)</div>
+    <div id="slave2-status" class="status-box status-slave">Slave 2: Up (Port 8003)</div>
+  </div>
+  
+  <div class="section">
+    <h2>Database Configuration</h2>
+    <input id="dbname" placeholder="Database Name" class="read-only" readonly>
+    <p><em>Note: Database operations are managed by the master</em></p>
+  </div>
+
+  <div class="section">
+    <h2>Select Records</h2>
+    <input id="select_dbname" placeholder="Database Name">
+    <input id="select_table" placeholder="Table">
+    <button onclick="selectAll()">Select</button>
+    <h3>Results:</h3>
+    <pre id="results">No data yet...</pre>
+  </div>
+
+  <script>
+    let host = "http://localhost:8002"; // Default to slave1's own port
+    let currentMasterPort = "8001";
+
+    function showAlert(message) {
+      alert(message);
+      console.log(message);
+    }
+
+    function updateNodeStatus() {
+      // First check if we've become the master
+      fetch(`${host}/is-master`)
+        .then(response => {
+          if (response.ok) {
+            return response.json();
+          }
+          throw new Error("Not responding");
+        })
+        .then(data => {
+          if (data.isMaster) {
+            // If we're the master now, redirect to master interface
+            window.location.href = "http://localhost:8001";
+            return;
+          }
+          
+          // Otherwise, check master status
+          return fetch(`http://localhost:${currentMasterPort}/ping`);
+        })
+        .then(response => {
+          if (response && response.ok) {
+            return response.text().then(text => {
+              if (text === "pong") {
+                // Master is up, update all nodes status
+                checkNodeStatus(currentMasterPort, 'master-status');
+                checkNodeStatus('8002', 'slave1-status');
+                checkNodeStatus('8003', 'slave2-status');
+                return;
+              }
+              throw new Error("Invalid response");
+            });
+          }
+          throw new Error("Master not responding");
+        })
+        .catch(error => {
+          console.log("Master is down, checking if we should become master...");
+          findNewMaster();
+        })
+        .finally(() => {
+          setTimeout(updateNodeStatus, 5000);
+        });
+    }
+
+    function findNewMaster() {
+      const slaves = [
+        {port: '8002', element: 'slave1-status'},
+        {port: '8003', element: 'slave2-status'}
+      ];
+      
+      let newMasterFound = false;
+      
+      slaves.forEach(slave => {
+        fetch(`http://localhost:${slave.port}/is-master`)
+          .then(response => {
+            if (response.ok) {
+              return response.json();
+            }
+            throw new Error("Not responding");
+          })
+          .then(data => {
+            if (data.isMaster && !newMasterFound) {
+              newMasterFound = true;
+              currentMasterPort = slave.port;
+              
+              // Update UI
+              document.getElementById('master-status').className = 'status-box status-down';
+              document.getElementById('master-status').textContent = 'Old Master: Down';
+              
+              const element = document.getElementById(slave.element);
+              element.className = 'status-box status-new-master';
+              element.textContent = `New Master: Up (Port ${slave.port})`;
+              
+              showAlert(`Master has switched to node on port ${slave.port}`);
+              
+              // If this slave becomes master, redirect to master interface
+              if (slave.port === "8002") {
+                window.location.href = "http://localhost:8001";
+              }
+            }
+          })
+          .catch(err => {
+            console.error(`Error checking slave ${slave.port}:`, err);
+            const element = document.getElementById(slave.element);
+            element.className = 'status-box status-down';
+            element.textContent = `Slave ${slave.port.charAt(3)}: Down`;
+          });
+      });
+    }
+
+    function checkNodeStatus(port, elementId) {
+      fetch(`http://localhost:${port}/ping`)
+        .then(response => {
+          if (response.ok) {
+            return response.text();
+          }
+          throw new Error("Not responding");
+        })
+        .then(text => {
+          if (text === "pong") {
+            const element = document.getElementById(elementId);
+            if (port === currentMasterPort) {
+              element.className = 'status-box status-master';
+              element.textContent = `Master: Up (Port ${port})`;
+            } else {
+              element.className = 'status-box status-slave';
+              element.textContent = `Slave ${port.charAt(3)}: Up`;
+            }
+            return;
+          }
+          throw new Error("Invalid response");
+        })
+        .catch(error => {
+          console.error(`Error checking node ${port}:`, error);
+          const element = document.getElementById(elementId);
+          if (port === currentMasterPort) {
+            element.className = 'status-box status-down';
+            element.textContent = 'Master: Down';
+          } else {
+            element.className = 'status-box status-down';
+            element.textContent = `Slave ${port.charAt(3)}: Down`;
+          }
+        });
+    }
+
+    function selectAll() {
+      const dbname = document.getElementById("select_dbname").value;
+      const table = document.getElementById("select_table").value;
+      
+      if (!dbname || !table) {
+        showAlert("Please fill all fields");
+        return;
+      }
+      
+      fetch(`${host}/select?dbname=${dbname}&table=${table}`)
+        .then(res => {
+          if (!res.ok) throw new Error(res.statusText);
+          return res.json();
+        })
+        .then(data => {
+          document.getElementById("results").innerText = JSON.stringify(data, null, 2);
+        })
+        .catch(err => {
+          document.getElementById("results").innerText = "Error: " + err.message;
+        });
+    }
+
+    window.onload = updateNodeStatus;
+  </script>
+</body>
+</html>
